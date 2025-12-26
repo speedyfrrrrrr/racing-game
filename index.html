@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HyperFrame Racer // Online</title>
+    <title>HyperFrame Racer // Supabase</title>
     <style>
         body { margin: 0; overflow: hidden; background: #000; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         canvas { display: block; width: 100vw; height: 100vh; }
@@ -39,7 +39,7 @@
             backdrop-filter: blur(10px);
         }
 
-        h1 { color: #fff; font-size: 60px; margin: 0; letter-spacing: 5px; text-transform: uppercase; font-style: italic; background: linear-gradient(45deg, #00ffff, #ff0055); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        h1 { color: #fff; font-size: 60px; margin: 0; letter-spacing: 5px; text-transform: uppercase; font-style: italic; background: linear-gradient(45deg, #00ffff, #ff0055); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
         
         .input-group { margin-top: 40px; display: flex; flex-direction: column; gap: 15px; align-items: center; }
         input { padding: 15px; font-size: 20px; background: rgba(255,255,255,0.1); border: 1px solid #fff; color: white; text-align: center; width: 250px; text-transform: uppercase; letter-spacing: 2px;}
@@ -85,7 +85,7 @@
             <span id="player-label">SPECTATOR</span><br>
             <span id="speed-display">0</span> KM/H
         </div>
-        <div class="hud-text system-color" id="game-status">OFFLINE</div>
+        <div class="hud-text system-color" id="game-status">DISCONNECTED</div>
         <div class="hud-text" style="text-align: right">
             LAP <span id="lap-display">1</span>/3<br>
             <span id="opponent-status">WAITING FOR OPPONENT...</span>
@@ -102,7 +102,7 @@
             <button class="btn p1-btn" id="join-p1-btn" onclick="joinGame(1)">JOIN AS P1 (HOST)</button>
             <button class="btn p2-btn" id="join-p2-btn" onclick="joinGame(2)">JOIN AS P2</button>
         </div>
-        <div id="status-msg">Enter a unique code to match with a friend.</div>
+        <div id="status-msg">Enter API credentials in code, then join.</div>
     </div>
 </div>
 
@@ -112,15 +112,13 @@
     <button class="btn" onclick="location.reload()">LOBBY</button>
 </div>
 
-<!-- Three.js & Firebase -->
+<!-- Three.js & Supabase -->
 <script type="importmap">
     {
         "imports": {
             "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
             "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
-            "firebase/app": "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js",
-            "firebase/auth": "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js",
-            "firebase/firestore": "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js"
+            "@supabase/supabase-js": "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm"
         }
     }
 </script>
@@ -130,44 +128,34 @@ import * as THREE from 'three';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, doc, setDoc, onSnapshot, collection } from 'firebase/firestore';
+import { createClient } from '@supabase/supabase-js';
 
-// --- FIREBASE SETUP ---
-const firebaseConfig = JSON.parse(__firebase_config);
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+// --- SUPABASE SETUP (MANUAL ENTRY REQ.) ---
+// 1. Go to supabase.com -> Settings -> API
+// 2. Copy "Project URL" and "anon public" Key
+const SUPABASE_URL = "https://fiowulqqfvvnnmhfwhjt.supabase.co";
+const SUPABASE_KEY = "sb_publishable_wyEL7FLFcHXpN1PnRofNtQ_nSBp3_dW";
 
-let currentUser = null;
+let supabase = null;
+try {
+    if (SUPABASE_URL.includes("INSERT")) {
+        console.warn("Supabase URL/Key missing. Please edit the code.");
+        document.getElementById('status-msg').innerText = "⚠️ Edit code to add Supabase API Key";
+        document.getElementById('status-msg').style.color = "#ff0055";
+    } else {
+        supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+        document.getElementById('game-status').innerText = "READY";
+        document.getElementById('status-msg').innerText = "Supabase Client Initialized.";
+    }
+} catch (e) {
+    console.error("Supabase init error:", e);
+}
+
+let channel = null;
 let myRole = null; // 1 or 2
 let roomCode = "";
 let gameActive = false;
 let finished = false;
-
-// --- AUTH ---
-const initAuth = async () => {
-    try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-            await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-            await signInAnonymously(auth);
-        }
-    } catch (e) {
-        console.error("Auth failed", e);
-        document.getElementById('status-msg').innerText = "Auth Error. Reload page.";
-    }
-};
-initAuth();
-
-onAuthStateChanged(auth, (user) => {
-    if (user) {
-        currentUser = user;
-        document.getElementById('status-msg').innerText = "Connected. Ready to join.";
-    }
-});
 
 // --- GAME CONFIG ---
 const TRACK_SCALE = 4;
@@ -176,7 +164,7 @@ const MAX_SPEED = 2.8;
 const ACCELERATION = 0.04;
 const FRICTION = 0.98;
 const TURN_SPEED = 0.045;
-const SYNC_RATE = 80; // Send updates every X ms
+const SYNC_RATE = 50; // Faster sync for broadcast (50ms = 20hz)
 
 // --- SCENE SETUP ---
 const scene = new THREE.Scene();
@@ -384,7 +372,7 @@ let localPlayer, remotePlayer;
 let lastSyncTime = 0;
 
 window.joinGame = async (role) => {
-    if (!currentUser) { alert("Not connected to server yet."); return; }
+    if (!supabase) { alert("Supabase not initialized. Add Keys in code."); return; }
     
     roomCode = document.getElementById('room-code').value.toUpperCase();
     if (roomCode.length < 3) { alert("Invalid Room Code"); return; }
@@ -398,7 +386,6 @@ window.joinGame = async (role) => {
     
     // Init Players
     // If I am P1 (Cyan), Local is P1, Remote is P2 (Pink)
-    // If I am P2 (Pink), Local is P2, Remote is P1 (Cyan)
     const p1Color = 0x00ffff;
     const p2Color = 0xff0055;
     
@@ -416,45 +403,55 @@ window.joinGame = async (role) => {
     localPlayer.updatePosition(0, 0);
     remotePlayer.updatePosition(0, 0);
 
-    // Start Listeners
-    setupNetworkListeners();
+    // Start Realtime
+    setupSupabaseChannel();
     document.getElementById('game-status').innerText = "CONNECTING...";
 };
 
-function setupNetworkListeners() {
-    const collName = 'multiplayer_races';
-    
-    // Documents: roomCode_p1, roomCode_p2
-    const myDocId = `${roomCode}_p${myRole}`;
-    const oppRole = myRole === 1 ? 2 : 1;
-    const oppDocId = `${roomCode}_p${oppRole}`;
-
-    // 1. Listen for Opponent
-    onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', collName, oppDocId), (snapshot) => {
-        if (snapshot.exists()) {
-            const data = snapshot.data();
-            document.getElementById('opponent-status').innerText = "OPPONENT CONNECTED";
-            document.getElementById('opponent-status').style.color = "#00ff00";
-            
-            // Sync Remote Player
-            remotePlayer.targetProgress = data.progress;
-            remotePlayer.targetOffset.x = data.offsetX;
-            
-            // Start Race if not started
-            if (!gameActive && !finished) {
-               // Simple handshake: if I see data, they are there.
-               // We need a synchronized start. For simplicity, start when opponent is seen.
-               startCountdown();
-            }
-            
-            // Check win
-            if (data.lap > LAPS_TO_WIN) {
-                endGame(false); // They won
-            }
+function setupSupabaseChannel() {
+    // 1. Join Room Channel
+    channel = supabase.channel(`race_room:${roomCode}`, {
+        config: {
+            broadcast: { self: false } // Don't receive own messages
         }
     });
 
-    // 2. Start Sync Loop
+    // 2. Listen for Broadcasts
+    channel.on('broadcast', { event: 'race-data' }, (payload) => {
+        // Payload comes as { payload: { role, progress... } }
+        const data = payload.payload;
+        
+        // Filter: Only accept data from the OTHER player
+        if (data.role === myRole) return; 
+
+        // Opponent is here
+        document.getElementById('opponent-status').innerText = "OPPONENT CONNECTED";
+        document.getElementById('opponent-status').style.color = "#00ff00";
+        document.getElementById('game-status').innerText = "ONLINE";
+
+        // Sync Remote Player
+        remotePlayer.targetProgress = data.progress;
+        remotePlayer.targetOffset.x = data.offsetX;
+
+        // Auto-start race if not started
+        if (!gameActive && !finished) {
+            startCountdown();
+        }
+
+        // Win/Loss check
+        if (data.lap > LAPS_TO_WIN) {
+            endGame(false); // They won
+        }
+    });
+
+    // 3. Subscribe
+    channel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+            document.getElementById('game-status').innerText = "WAITING FOR OPPONENT";
+        }
+    });
+
+    // Start Sync Loop
     requestAnimationFrame(gameLoop);
 }
 
@@ -483,6 +480,8 @@ function startCountdown() {
 function checkWin(lap) {
     if (lap > LAPS_TO_WIN && !finished) {
         endGame(true);
+        // Send one final packet to ensure opponent knows
+        syncState(); 
     }
 }
 
@@ -506,7 +505,7 @@ function gameLoop(time) {
         remotePlayer.updateRemote();
     }
 
-    // Network Sync (Throttled)
+    // Network Sync
     if (gameActive && !finished && time - lastSyncTime > SYNC_RATE) {
         syncState();
         lastSyncTime = time;
@@ -516,21 +515,19 @@ function gameLoop(time) {
 }
 
 async function syncState() {
-    if (!currentUser || !myRole) return;
+    if (!channel || !myRole) return;
     
-    const collName = 'multiplayer_races';
-    const myDocId = `${roomCode}_p${myRole}`;
-    
-    try {
-        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', collName, myDocId), {
+    // Broadcast my state
+    await channel.send({
+        type: 'broadcast',
+        event: 'race-data',
+        payload: {
+            role: myRole,
             progress: localPlayer.progress,
             offsetX: localPlayer.offset.x,
-            lap: localPlayer.lap,
-            timestamp: Date.now()
-        });
-    } catch (e) {
-        // Ignore write errors (rate limits etc)
-    }
+            lap: localPlayer.lap
+        }
+    });
 }
 
 // Resize
