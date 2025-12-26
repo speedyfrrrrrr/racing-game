@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HyperFrame Racer // Online</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        
+        /* UI Layer */
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;
+            display: flex; flex-direction: column; justify-content: space-between; padding: 30px; box-sizing: border-box;
+        }
+
+        .hud-top { display: flex; justify-content: space-between; width: 100%; }
+        
+        .hud-text {
+            color: #fff;
+            text-shadow: 0 0 10px rgba(255,255,255,0.5);
+            font-weight: bold;
+            font-size: 24px;
+            font-variant-numeric: tabular-nums;
+        }
+        
+        .p1-color { color: #00ffff; text-shadow: 0 0 10px #00ffff; }
+        .p2-color { color: #ff0055; text-shadow: 0 0 10px #ff0055; }
+        .system-color { color: #ffff00; text-shadow: 0 0 10px #ffff00; }
+
+        /* Screens */
+        #lobby-screen, #win-screen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9);
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            pointer-events: auto;
+            z-index: 100;
+            backdrop-filter: blur(10px);
+        }
+
+        h1 { color: #fff; font-size: 60px; margin: 0; letter-spacing: 5px; text-transform: uppercase; font-style: italic; background: linear-gradient(45deg, #00ffff, #ff0055); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        
+        .input-group { margin-top: 40px; display: flex; flex-direction: column; gap: 15px; align-items: center; }
+        input { padding: 15px; font-size: 20px; background: rgba(255,255,255,0.1); border: 1px solid #fff; color: white; text-align: center; width: 250px; text-transform: uppercase; letter-spacing: 2px;}
+        input:focus { outline: none; border-color: #00ffff; box-shadow: 0 0 15px rgba(0, 255, 255, 0.5); }
+
+        .btn-row { display: flex; gap: 20px; margin-top: 20px; }
+        .btn {
+            padding: 15px 40px;
+            font-size: 18px;
+            background: transparent;
+            color: #fff;
+            border: 2px solid #fff;
+            cursor: pointer;
+            text-transform: uppercase;
+            font-weight: bold;
+            transition: 0.3s;
+            min-width: 200px;
+        }
+        .btn:hover { background: #fff; color: #000; box-shadow: 0 0 20px #fff; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        .p1-btn { border-color: #00ffff; color: #00ffff; }
+        .p1-btn:hover { background: #00ffff; color: #000; }
+        
+        .p2-btn { border-color: #ff0055; color: #ff0055; }
+        .p2-btn:hover { background: #ff0055; color: #000; }
+
+        #status-msg { margin-top: 20px; color: #aaa; font-size: 16px; height: 20px; }
+
+        #countdown {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            font-size: 150px; color: #fff; z-index: 50; display: none;
+            text-shadow: 0 0 30px #fff;
+        }
+    </style>
+</head>
+<body>
+
+<!-- HUD -->
+<div id="ui-layer">
+    <div class="hud-top">
+        <div class="hud-text">
+            <span id="player-label">SPECTATOR</span><br>
+            <span id="speed-display">0</span> KM/H
+        </div>
+        <div class="hud-text system-color" id="game-status">OFFLINE</div>
+        <div class="hud-text" style="text-align: right">
+            LAP <span id="lap-display">1</span>/3<br>
+            <span id="opponent-status">WAITING FOR OPPONENT...</span>
+        </div>
+    </div>
+</div>
+
+<!-- Lobby Screen -->
+<div id="lobby-screen">
+    <h1>HyperFrame Online</h1>
+    <div class="input-group">
+        <input type="text" id="room-code" placeholder="ENTER ROOM CODE" maxlength="6" value="RACE1">
+        <div class="btn-row">
+            <button class="btn p1-btn" id="join-p1-btn" onclick="joinGame(1)">JOIN AS P1 (HOST)</button>
+            <button class="btn p2-btn" id="join-p2-btn" onclick="joinGame(2)">JOIN AS P2</button>
+        </div>
+        <div id="status-msg">Enter a unique code to match with a friend.</div>
+    </div>
+</div>
+
+<div id="countdown">3</div>
+<div id="win-screen" style="display: none;">
+    <h1 id="winner-text">YOU WIN</h1>
+    <button class="btn" onclick="location.reload()">LOBBY</button>
+</div>
+
+<!-- Three.js & Firebase -->
+<script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+            "firebase/app": "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js",
+            "firebase/auth": "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js",
+            "firebase/firestore": "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js"
+        }
+    }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+import { getFirestore, doc, setDoc, onSnapshot, collection } from 'firebase/firestore';
+
+// --- FIREBASE SETUP ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+let currentUser = null;
+let myRole = null; // 1 or 2
+let roomCode = "";
+let gameActive = false;
+let finished = false;
+
+// --- AUTH ---
+const initAuth = async () => {
+    try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+            await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+            await signInAnonymously(auth);
+        }
+    } catch (e) {
+        console.error("Auth failed", e);
+        document.getElementById('status-msg').innerText = "Auth Error. Reload page.";
+    }
+};
+initAuth();
+
+onAuthStateChanged(auth, (user) => {
+    if (user) {
+        currentUser = user;
+        document.getElementById('status-msg').innerText = "Connected. Ready to join.";
+    }
+});
+
+// --- GAME CONFIG ---
+const TRACK_SCALE = 4;
+const LAPS_TO_WIN = 3;
+const MAX_SPEED = 2.8;
+const ACCELERATION = 0.04;
+const FRICTION = 0.98;
+const TURN_SPEED = 0.045;
+const SYNC_RATE = 80; // Send updates every X ms
+
+// --- SCENE SETUP ---
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x050505);
+scene.fog = new THREE.FogExp2(0x050505, 0.015);
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+// Post Processing (Bloom)
+const renderScene = new RenderPass(scene, camera);
+const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+bloomPass.threshold = 0.2;
+bloomPass.strength = 2.0;
+bloomPass.radius = 0.5;
+const composer = new EffectComposer(renderer);
+composer.addPass(renderScene);
+composer.addPass(bloomPass);
+
+// Lighting
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+scene.add(ambientLight);
+const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+dirLight.position.set(10, 20, 10);
+scene.add(dirLight);
+
+// --- TRACK GENERATION ---
+const curve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, 0, 50),
+    new THREE.Vector3(40, 0, 20),
+    new THREE.Vector3(60, 5, -20),
+    new THREE.Vector3(20, 0, -60),
+    new THREE.Vector3(-20, 0, -60),
+    new THREE.Vector3(-60, 5, -20),
+    new THREE.Vector3(-40, 0, 20),
+    new THREE.Vector3(0, 0, 50)
+]);
+curve.closed = true;
+
+const trackWidth = 8;
+const trackGeometry = new THREE.TubeGeometry(curve, 100, trackWidth, 3, true);
+const trackMaterial = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.4, side: THREE.DoubleSide });
+const trackMesh = new THREE.Mesh(trackGeometry, trackMaterial);
+trackMesh.scale.set(TRACK_SCALE, TRACK_SCALE, TRACK_SCALE);
+scene.add(trackMesh);
+
+const wireframeGeo = new THREE.WireframeGeometry(trackGeometry);
+const wireframeMat = new THREE.LineBasicMaterial({ color: 0xaa00ff, opacity: 0.3, transparent: true });
+const wireframe = new THREE.LineSegments(wireframeGeo, wireframeMat);
+wireframe.scale.set(TRACK_SCALE, TRACK_SCALE, TRACK_SCALE);
+scene.add(wireframe);
+
+const gridHelper = new THREE.GridHelper(800, 100, 0x222222, 0x111111);
+gridHelper.position.y = -10;
+scene.add(gridHelper);
+
+const envGeo = new THREE.BoxGeometry(1, 1, 1);
+for (let i = 0; i < 200; i++) {
+    const object = new THREE.Mesh(envGeo, new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: true }));
+    object.position.x = (Math.random() - 0.5) * 600;
+    object.position.y = (Math.random() - 0.5) * 200;
+    object.position.z = (Math.random() - 0.5) * 600;
+    object.scale.setScalar(Math.random() * 2 + 1);
+    scene.add(object);
+}
+
+// --- PLAYER LOGIC ---
+const keys = { w: false, a: false, s: false, d: false, ArrowUp: false, ArrowLeft: false, ArrowDown: false, ArrowRight: false };
+
+window.addEventListener('keydown', (e) => { keys[e.key] = true; });
+window.addEventListener('keyup', (e) => { keys[e.key] = false; });
+
+class Player {
+    constructor(isLocal, color) {
+        this.isLocal = isLocal;
+        this.mesh = this.createShip(color);
+        this.speed = 0;
+        this.lap = 0;
+        this.progress = 0; // 0 to 1 along curve
+        this.offset = new THREE.Vector2(0, 0); // Horizontal/Vertical offset on track tube
+        
+        // Network smoothing
+        this.targetProgress = 0;
+        this.targetOffset = new THREE.Vector2(0,0);
+        
+        scene.add(this.mesh);
+    }
+
+    createShip(color) {
+        const group = new THREE.Group();
+        const bodyGeo = new THREE.ConeGeometry(1, 4, 4);
+        bodyGeo.rotateX(Math.PI / 2);
+        const mat = new THREE.MeshStandardMaterial({ color: color, emissive: color, emissiveIntensity: 0.5 });
+        const body = new THREE.Mesh(bodyGeo, mat);
+        group.add(body);
+        
+        // Engine glow
+        const glowGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+        const glowMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+        const glow = new THREE.Mesh(glowGeo, glowMat);
+        glow.position.z = 2;
+        group.add(glow);
+        
+        return group;
+    }
+
+    updateLocal() {
+        // Input
+        let throttle = 0;
+        let turn = 0;
+        
+        if (keys['w'] || keys['ArrowUp']) throttle = 1;
+        if (keys['s'] || keys['ArrowDown']) throttle = -0.5;
+        if (keys['a'] || keys['ArrowLeft']) turn = -1;
+        if (keys['d'] || keys['ArrowRight']) turn = 1;
+
+        // Physics
+        if (throttle > 0) this.speed += ACCELERATION;
+        else if (throttle < 0) this.speed -= ACCELERATION;
+        else this.speed *= FRICTION;
+
+        this.speed = Math.max(Math.min(this.speed, MAX_SPEED), -MAX_SPEED/2);
+
+        // Move along curve
+        // Scale speed by track length approximation
+        const speedFactor = 0.0005 * (this.speed / TRACK_SCALE); 
+        this.progress -= speedFactor; // Move forward (negative z)
+
+        // Handle Loops
+        if (this.progress < 0) {
+            this.progress += 1;
+            this.lap++;
+            document.getElementById('lap-display').innerText = Math.min(this.lap, LAPS_TO_WIN);
+            checkWin(this.lap);
+        }
+        if (this.progress > 1) this.progress -= 1;
+
+        // Side to Side movement (Bank)
+        this.offset.x += turn * TURN_SPEED;
+        this.offset.x = Math.max(Math.min(this.offset.x, 3), -3); // Limit to track width
+
+        // Update Position
+        this.updatePosition(this.progress, this.offset.x);
+        
+        // Update Camera
+        if (this.isLocal) {
+            const idealOffset = new THREE.Vector3(0, 3, 8);
+            idealOffset.applyQuaternion(this.mesh.quaternion);
+            idealOffset.add(this.mesh.position);
+            
+            camera.position.lerp(idealOffset, 0.1);
+            camera.lookAt(this.mesh.position);
+            
+            // HUD
+            document.getElementById('speed-display').innerText = Math.abs(Math.round(this.speed * 100));
+        }
+    }
+
+    updateRemote() {
+        // Lerp towards network target
+        // We handle wrap-around for interpolation
+        let diff = this.targetProgress - this.progress;
+        if (diff > 0.5) this.progress += 1; // Wrapped forward
+        if (diff < -0.5) this.progress -= 1; // Wrapped backward
+        
+        this.progress += (this.targetProgress - this.progress) * 0.1;
+        this.offset.x += (this.targetOffset.x - this.offset.x) * 0.1;
+        
+        // Normalize
+        if (this.progress < 0) this.progress += 1;
+        if (this.progress > 1) this.progress -= 1;
+
+        this.updatePosition(this.progress, this.offset.x);
+    }
+
+    updatePosition(t, offsetX) {
+        // Get point on curve
+        const pos = curve.getPointAt(t);
+        const tangent = curve.getTangentAt(t).normalize();
+        
+        // Scale position
+        pos.multiplyScalar(TRACK_SCALE);
+        
+        // Calculate banking/normals (simplified up vector)
+        const up = new THREE.Vector3(0, 1, 0);
+        const axis = new THREE.Vector3().crossVectors(up, tangent).normalize();
+        
+        // Apply offset relative to track direction
+        const offsetVec = axis.clone().multiplyScalar(offsetX);
+        pos.add(offsetVec);
+
+        this.mesh.position.copy(pos);
+        
+        // Orientation
+        const lookAtPos = curve.getPointAt((t - 0.01 + 1) % 1).multiplyScalar(TRACK_SCALE).add(offsetVec);
+        this.mesh.lookAt(lookAtPos);
+    }
+}
+
+// --- NETWORKING ---
+let localPlayer, remotePlayer;
+let lastSyncTime = 0;
+
+window.joinGame = async (role) => {
+    if (!currentUser) { alert("Not connected to server yet."); return; }
+    
+    roomCode = document.getElementById('room-code').value.toUpperCase();
+    if (roomCode.length < 3) { alert("Invalid Room Code"); return; }
+
+    myRole = role;
+    
+    // UI Update
+    document.getElementById('lobby-screen').style.display = 'none';
+    document.getElementById('player-label').innerText = role === 1 ? "PLAYER 1 (HOST)" : "PLAYER 2";
+    document.getElementById('player-label').className = role === 1 ? "hud-text p1-color" : "hud-text p2-color";
+    
+    // Init Players
+    // If I am P1 (Cyan), Local is P1, Remote is P2 (Pink)
+    // If I am P2 (Pink), Local is P2, Remote is P1 (Cyan)
+    const p1Color = 0x00ffff;
+    const p2Color = 0xff0055;
+    
+    if (myRole === 1) {
+        localPlayer = new Player(true, p1Color);
+        remotePlayer = new Player(false, p2Color);
+    } else {
+        localPlayer = new Player(true, p2Color);
+        remotePlayer = new Player(false, p1Color);
+    }
+
+    // Reset Positions
+    localPlayer.progress = 0;
+    remotePlayer.progress = 0;
+    localPlayer.updatePosition(0, 0);
+    remotePlayer.updatePosition(0, 0);
+
+    // Start Listeners
+    setupNetworkListeners();
+    document.getElementById('game-status').innerText = "CONNECTING...";
+};
+
+function setupNetworkListeners() {
+    const collName = 'multiplayer_races';
+    
+    // Documents: roomCode_p1, roomCode_p2
+    const myDocId = `${roomCode}_p${myRole}`;
+    const oppRole = myRole === 1 ? 2 : 1;
+    const oppDocId = `${roomCode}_p${oppRole}`;
+
+    // 1. Listen for Opponent
+    onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', collName, oppDocId), (snapshot) => {
+        if (snapshot.exists()) {
+            const data = snapshot.data();
+            document.getElementById('opponent-status').innerText = "OPPONENT CONNECTED";
+            document.getElementById('opponent-status').style.color = "#00ff00";
+            
+            // Sync Remote Player
+            remotePlayer.targetProgress = data.progress;
+            remotePlayer.targetOffset.x = data.offsetX;
+            
+            // Start Race if not started
+            if (!gameActive && !finished) {
+               // Simple handshake: if I see data, they are there.
+               // We need a synchronized start. For simplicity, start when opponent is seen.
+               startCountdown();
+            }
+            
+            // Check win
+            if (data.lap > LAPS_TO_WIN) {
+                endGame(false); // They won
+            }
+        }
+    });
+
+    // 2. Start Sync Loop
+    requestAnimationFrame(gameLoop);
+}
+
+function startCountdown() {
+    if (gameActive) return;
+    document.getElementById('game-status').innerText = "RACING";
+    
+    const countEl = document.getElementById('countdown');
+    countEl.style.display = 'block';
+    let count = 3;
+    
+    const interval = setInterval(() => {
+        count--;
+        if (count > 0) {
+            countEl.innerText = count;
+        } else if (count === 0) {
+            countEl.innerText = "GO";
+            gameActive = true;
+        } else {
+            countEl.style.display = 'none';
+            clearInterval(interval);
+        }
+    }, 1000);
+}
+
+function checkWin(lap) {
+    if (lap > LAPS_TO_WIN && !finished) {
+        endGame(true);
+    }
+}
+
+function endGame(iWon) {
+    finished = true;
+    gameActive = false;
+    document.getElementById('win-screen').style.display = 'flex';
+    document.getElementById('winner-text').innerText = iWon ? "VICTORY" : "DEFEAT";
+    document.getElementById('winner-text').style.color = iWon ? "#00ffff" : "#ff0055";
+}
+
+// --- MAIN LOOP ---
+function gameLoop(time) {
+    requestAnimationFrame(gameLoop);
+
+    if (gameActive) {
+        localPlayer.updateLocal();
+    }
+    
+    if (remotePlayer) {
+        remotePlayer.updateRemote();
+    }
+
+    // Network Sync (Throttled)
+    if (gameActive && !finished && time - lastSyncTime > SYNC_RATE) {
+        syncState();
+        lastSyncTime = time;
+    }
+
+    composer.render();
+}
+
+async function syncState() {
+    if (!currentUser || !myRole) return;
+    
+    const collName = 'multiplayer_races';
+    const myDocId = `${roomCode}_p${myRole}`;
+    
+    try {
+        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', collName, myDocId), {
+            progress: localPlayer.progress,
+            offsetX: localPlayer.offset.x,
+            lap: localPlayer.lap,
+            timestamp: Date.now()
+        });
+    } catch (e) {
+        // Ignore write errors (rate limits etc)
+    }
+}
+
+// Resize
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    composer.setSize(window.innerWidth, window.innerHeight);
+});
+
+</script>
+</body>
+</html>
